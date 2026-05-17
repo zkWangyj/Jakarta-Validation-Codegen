@@ -1,0 +1,3 @@
+com\firmae\validation\annotation\Validated.class
+com\firmae\validation\annotation\PreCompile.class
+com\firmae\validation\ValidationHelper.class

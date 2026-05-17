@@ -1,0 +1,4 @@
+com\firmae\validation\plugin\ValidationCodeCleanSourceMojo.class
+com\firmae\validation\plugin\ValidationCodegenMojo.class
+com\firmae\validation\plugin\ValidationCodeCleanSourceMojo$1.class
+com\firmae\validation\plugin\ValidationCodegenMojo$1.class

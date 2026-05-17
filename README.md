@@ -2,6 +2,10 @@
 
 基于 Maven 插件 + JavaParser 的编译时校验代码注入工具，在 `generate-sources` 阶段自动将 `ValidationHelper.checkXxx()` 调用注入到方法体中。
 
+## 解决问题
+在编码时，很多时候需要校验参数合法性，类似某个字符串不能为空之类的，手动写代码或调用Hibernate Validator太麻烦。 
+现在，你只需要使用Jakarta-Validation 注解写好校验规则，工具自动帮你生成静态校验代码
+
 ## 核心特性
 
 - **编译时注入**: Maven 插件在编译前自动注入校验代码到方法体

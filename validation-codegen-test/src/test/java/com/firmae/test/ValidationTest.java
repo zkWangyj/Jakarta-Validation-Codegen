@@ -1,6 +1,8 @@
 package com.firmae.test;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.core.env.MapPropertySource;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -44,7 +46,8 @@ public class ValidationTest {
         assertEquals("服务名称不能为空白", ex.getMessage());
     }
 
-    // ==================== createUser 测试 (@NotNull + @Size + @Email + @Min + @Max) ====================
+    // ==================== createUser 测试 (@NotNull + @Size + @Email + @Min + @Max)
+    // ====================
 
     private UserService newUserService() {
         return new UserService("test-service");
@@ -121,7 +124,8 @@ public class ValidationTest {
         assertEquals("年龄不能大于 150", ex.getMessage());
     }
 
-    // ==================== updateUser 测试 (@NotNull + @NotBlank + @PositiveOrZero) ====================
+    // ==================== updateUser 测试 (@NotNull + @NotBlank + @PositiveOrZero)
+    // ====================
 
     @Test
     void testUpdateUser_valid() {
@@ -168,7 +172,8 @@ public class ValidationTest {
         assertDoesNotThrow(() -> newUserService().updateUser(1L, "John", 0.0));
     }
 
-    // ==================== verifyUser 测试 (@NotNull + @Pattern + @AssertTrue) ====================
+    // ==================== verifyUser 测试 (@NotNull + @Pattern + @AssertTrue)
+    // ====================
 
     @Test
     void testVerifyUser_valid() {
@@ -203,7 +208,8 @@ public class ValidationTest {
         assertEquals("必须同意条款", ex.getMessage());
     }
 
-    // ==================== validateUsername 静态方法测试 (@NotNull + @Size) ====================
+    // ==================== validateUsername 静态方法测试 (@NotNull + @Size)
+    // ====================
 
     @Test
     void testValidateUsername_valid() {
@@ -264,7 +270,8 @@ public class ValidationTest {
         assertEquals("标签列表不能为空", ex.getMessage());
     }
 
-    // ==================== setDescription 测试 (@NotEmpty - String) ====================
+    // ==================== setDescription 测试 (@NotEmpty - String)
+    // ====================
 
     @Test
     void testSetDescription_valid() {
@@ -360,7 +367,8 @@ public class ValidationTest {
         assertEquals("账户必须已禁用", ex.getMessage());
     }
 
-    // ==================== setMetadata 测试 (@NotNull + @NotEmpty - Map) ====================
+    // ==================== setMetadata 测试 (@NotNull + @NotEmpty - Map)
+    // ====================
 
     @Test
     void testSetMetadata_valid() {
@@ -500,5 +508,80 @@ public class ValidationTest {
     @Test
     void testValidated_valid() {
         assertDoesNotThrow(() -> newUserService().saveUser(new UserDTO("john", "john@example.com", 25)));
+    }
+
+    // ==================== Spring 占位符解析测试 (@Pattern) ====================
+
+    @Test
+    void testSpringPlaceholderPatternResolved() {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().getPropertySources().addFirst(
+                new MapPropertySource("testProperties", Map.of("token.pattern", "[a-z]{32}")));
+        context.register(com.firmae.validation.SpringConfigHolder.class);
+        context.refresh();
+        try {
+            SpringPlaceholderService service = new SpringPlaceholderService();
+            assertDoesNotThrow(() -> service.processToken("abcdefghijklmnopqrstuvwxyzabcdef"));
+
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.processToken("INVALID_TOKEN"));
+            assertEquals("token格式不正确", ex.getMessage());
+        } finally {
+            context.close();
+        }
+    }
+
+    @Test
+    void testSpringPlaceholderSizeStringResolved() {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().getPropertySources().addFirst(
+                new MapPropertySource("testProperties", Map.of("username.min", "3", "username.max", "8")));
+        context.register(com.firmae.validation.SpringConfigHolder.class);
+        context.refresh();
+        try {
+            SpringPlaceholderService service = new SpringPlaceholderService();
+            assertDoesNotThrow(() -> service.checkSize("abc"));
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.checkSize("ab"));
+            assertTrue(ex.getMessage().contains("用户名长度必须在"));
+        } finally {
+            context.close();
+        }
+    }
+
+    @Test
+    void testSpringPlaceholderMinStringResolved() {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().getPropertySources().addFirst(
+                new MapPropertySource("testProperties", Map.of("user.age.min", "18")));
+        context.register(com.firmae.validation.SpringConfigHolder.class);
+        context.refresh();
+        try {
+            SpringPlaceholderService service = new SpringPlaceholderService();
+            assertDoesNotThrow(() -> service.checkMin(18));
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.checkMin(17));
+            assertTrue(ex.getMessage().contains("年龄不能小于"));
+        } finally {
+            context.close();
+        }
+    }
+
+    @Test
+    void testSpringPlaceholderMaxStringResolved() {
+        AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext();
+        context.getEnvironment().getPropertySources().addFirst(
+                new MapPropertySource("testProperties", Map.of("user.age.max", "65")));
+        context.register(com.firmae.validation.SpringConfigHolder.class);
+        context.refresh();
+        try {
+            SpringPlaceholderService service = new SpringPlaceholderService();
+            assertDoesNotThrow(() -> service.checkAge(60));
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.checkAge(70));
+            assertTrue(ex.getMessage().contains("年龄不能大于"));
+        } finally {
+            context.close();
+        }
     }
 }

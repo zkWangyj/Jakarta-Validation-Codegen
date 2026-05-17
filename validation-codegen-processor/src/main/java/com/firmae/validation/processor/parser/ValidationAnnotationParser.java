@@ -22,43 +22,45 @@ public class ValidationAnnotationParser {
     private final Types typeUtils;
     private final Elements elementUtils;
     private final Messager messager;
-    
+
     // Jakarta Validation 约束注解
     private static final Set<String> CONSTRAINT_ANNOTATIONS = new HashSet<>(Arrays.asList(
-        // 空值检查
-        "jakarta.validation.constraints.NotNull",
-        "jakarta.validation.constraints.NotEmpty",
-        "jakarta.validation.constraints.NotBlank",
-        
-        // 范围检查
-        "jakarta.validation.constraints.Min",
-        "jakarta.validation.constraints.Max",
-        "jakarta.validation.constraints.DecimalMin",
-        "jakarta.validation.constraints.DecimalMax",
-        "jakarta.validation.constraints.Size",
-        "jakarta.validation.constraints.Digits",
-        
-        // 模式检查
-        "jakarta.validation.constraints.Pattern",
-        "jakarta.validation.constraints.Email",
-        
-        // 时间检查
-        "jakarta.validation.constraints.Future",
-        "jakarta.validation.constraints.FutureOrPresent",
-        "jakarta.validation.constraints.Past",
-        "jakarta.validation.constraints.PastOrPresent",
-        
-        // 布尔检查
-        "jakarta.validation.constraints.AssertTrue",
-        "jakarta.validation.constraints.AssertFalse",
-        
-        // 正负检查
-        "jakarta.validation.constraints.Positive",
-        "jakarta.validation.constraints.PositiveOrZero",
-        "jakarta.validation.constraints.Negative",
-        "jakarta.validation.constraints.NegativeOrZero"
-    ));
-    
+            // 空值检查
+            "jakarta.validation.constraints.NotNull",
+            "jakarta.validation.constraints.NotEmpty",
+            "jakarta.validation.constraints.NotBlank",
+
+            // 范围检查
+            "jakarta.validation.constraints.Min",
+            "jakarta.validation.constraints.Max",
+            "jakarta.validation.constraints.DecimalMin",
+            "jakarta.validation.constraints.DecimalMax",
+            "jakarta.validation.constraints.Size",
+            "jakarta.validation.constraints.Digits",
+
+            // 模式检查
+            "jakarta.validation.constraints.Pattern",
+            "jakarta.validation.constraints.Email",
+
+            // 时间检查
+            "jakarta.validation.constraints.Future",
+            "jakarta.validation.constraints.FutureOrPresent",
+            "jakarta.validation.constraints.Past",
+            "jakarta.validation.constraints.PastOrPresent",
+
+            // 布尔检查
+            "jakarta.validation.constraints.AssertTrue",
+            "jakarta.validation.constraints.AssertFalse",
+
+            // 正负检查
+            "jakarta.validation.constraints.Positive",
+            "jakarta.validation.constraints.PositiveOrZero",
+            "jakarta.validation.constraints.Negative",
+            "jakarta.validation.constraints.NegativeOrZero",
+            "com.firmae.validation.annotation.MinString",
+            "com.firmae.validation.annotation.MaxString",
+            "com.firmae.validation.annotation.SizeString"));
+
     // 默认错误消息
     private static final Map<String, String> DEFAULT_MESSAGES = new HashMap<>();
     static {
@@ -70,6 +72,9 @@ public class ValidationAnnotationParser {
         DEFAULT_MESSAGES.put("DecimalMin", "必须大于或等于 {value}");
         DEFAULT_MESSAGES.put("DecimalMax", "必须小于或等于 {value}");
         DEFAULT_MESSAGES.put("Size", "长度必须在 {min} 到 {max} 之间");
+        DEFAULT_MESSAGES.put("MinString", "必须大于或等于 {value}");
+        DEFAULT_MESSAGES.put("MaxString", "必须小于或等于 {value}");
+        DEFAULT_MESSAGES.put("SizeString", "长度必须在 {min} 到 {max} 之间");
         DEFAULT_MESSAGES.put("Digits", "数字格式不正确");
         DEFAULT_MESSAGES.put("Pattern", "格式不正确");
         DEFAULT_MESSAGES.put("Email", "必须是有效的邮箱地址");
@@ -96,10 +101,10 @@ public class ValidationAnnotationParser {
      */
     public List<FieldValidationModel.Constraint> parseConstraints(Element element) {
         List<FieldValidationModel.Constraint> constraints = new ArrayList<>();
-        
+
         for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
             String annotationType = annotation.getAnnotationType().toString();
-            
+
             // 检查是否是约束注解
             if (isConstraintAnnotation(annotationType)) {
                 FieldValidationModel.Constraint constraint = parseConstraint(annotation);
@@ -108,7 +113,7 @@ public class ValidationAnnotationParser {
                 }
             }
         }
-        
+
         return constraints;
     }
 
@@ -118,28 +123,28 @@ public class ValidationAnnotationParser {
     private FieldValidationModel.Constraint parseConstraint(AnnotationMirror annotation) {
         String annotationType = annotation.getAnnotationType().toString();
         String constraintType = annotationType.substring(annotationType.lastIndexOf('.') + 1);
-        
+
         // 提取注解属性
         Map<String, Object> attributes = extractAttributes(annotation);
-        
+
         // 获取消息
         String message = (String) attributes.getOrDefault("message", "");
         if (message.isEmpty() || message.startsWith("{")) {
             // 使用默认消息
             message = formatDefaultMessage(constraintType, attributes);
         }
-        
+
         FieldValidationModel.Constraint constraint = new FieldValidationModel.Constraint(
-            constraintType, message
-        );
-        
+                constraintType, message);
+
         // 添加属性（排除 message）
         for (Map.Entry<String, Object> entry : attributes.entrySet()) {
-            if (!"message".equals(entry.getKey()) && !"groups".equals(entry.getKey()) && !"payload".equals(entry.getKey())) {
+            if (!"message".equals(entry.getKey()) && !"groups".equals(entry.getKey())
+                    && !"payload".equals(entry.getKey())) {
                 constraint.addAttribute(entry.getKey(), entry.getValue());
             }
         }
-        
+
         return constraint;
     }
 
@@ -148,12 +153,12 @@ public class ValidationAnnotationParser {
      */
     private Map<String, Object> extractAttributes(AnnotationMirror annotation) {
         Map<String, Object> attributes = new HashMap<>();
-        
-        for (Map.Entry<? extends ExecutableElement, ? extends AnnotationValue> entry : 
-                annotation.getElementValues().entrySet()) {
+
+        for (Map.Entry<? extends ExecutableElement, ? extends AnnotationValue> entry : annotation.getElementValues()
+                .entrySet()) {
             String attrName = entry.getKey().getSimpleName().toString();
             Object attrValue = entry.getValue().getValue();
-            
+
             // 处理不同类型的值
             if (attrValue instanceof String) {
                 attributes.put(attrName, attrValue);
@@ -176,7 +181,7 @@ public class ValidationAnnotationParser {
                 attributes.put(attrName, attrValue.toString());
             }
         }
-        
+
         return attributes;
     }
 
@@ -185,7 +190,7 @@ public class ValidationAnnotationParser {
      */
     private String formatDefaultMessage(String constraintType, Map<String, Object> attributes) {
         String message = DEFAULT_MESSAGES.getOrDefault(constraintType, "校验失败");
-        
+
         // 替换占位符
         for (Map.Entry<String, Object> entry : attributes.entrySet()) {
             String placeholder = "{" + entry.getKey() + "}";
@@ -193,7 +198,7 @@ public class ValidationAnnotationParser {
                 message = message.replace(placeholder, String.valueOf(entry.getValue()));
             }
         }
-        
+
         return message;
     }
 

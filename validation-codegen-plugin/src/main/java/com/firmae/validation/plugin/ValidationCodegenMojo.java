@@ -4,6 +4,7 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
+import org.apache.maven.project.MavenProject;
 
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
@@ -48,6 +49,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Maven Mojo - 扫描 @PreCompile 注解的方法/构造器，注入 Jakarta Validation 校验代码。
@@ -79,14 +81,20 @@ public class ValidationCodegenMojo extends AbstractMojo {
     private static final Set<String> VALIDATION_ANNOTATIONS = Set.of(
             "NotNull", "NotBlank", "NotEmpty", "Size", "Min", "Max",
             "Pattern", "Email", "Positive", "PositiveOrZero",
-            "Negative", "NegativeOrZero", "AssertTrue", "AssertFalse"
-    );
+            "Negative", "NegativeOrZero", "AssertTrue", "AssertFalse",
+            "MinString", "MaxString", "SizeString");
 
     /**
      * 待注入 compact constructor 的 Record（Record 名 -> 校验语句列表）
      * 用于没有显式 compact constructor 的 Record，在字符串后处理阶段插入
      */
+    @org.apache.maven.plugins.annotations.Parameter(defaultValue = "${project}", readonly = true, required = true)
+    private MavenProject project;
+
     private final Map<String, List<Statement>> pendingRecordInjections = new HashMap<>();
+    private boolean springSupport = false;
+    private boolean needsSpringConfigHolderImport = false;
+    private static final Pattern SPRING_PLACEHOLDER_PATTERN = Pattern.compile("^\\$\\{(.+)}$");
 
     @Override
     public void execute() throws MojoExecutionException {
@@ -98,6 +106,10 @@ public class ValidationCodegenMojo extends AbstractMojo {
         getLog().info("扫描源码目录: " + sourceDir.getAbsolutePath());
         getLog().info("输出目录: " + outputDir.getAbsolutePath());
 
+        this.springSupport = detectSpringSupport();
+        getLog().info("Spring support " + (springSupport ? "enabled" : "disabled"));
+        generateSpringConfigHolder();
+
         List<File> javaFiles = findJavaFiles(sourceDir);
         getLog().info("找到 " + javaFiles.size() + " 个 Java 源文件");
 
@@ -106,6 +118,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
 
         for (File javaFile : javaFiles) {
             try {
+                this.needsSpringConfigHolderImport = false;
                 int count = processJavaFile(javaFile);
                 if (count > 0) {
                     processedFiles++;
@@ -149,7 +162,8 @@ public class ValidationCodegenMojo extends AbstractMojo {
         // 读取原始源码（用于 Record 的字符串后处理）
         String originalSource = Files.readString(javaFile.toPath(), StandardCharsets.UTF_8);
 
-        JavaParser parser = new JavaParser(new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
+        JavaParser parser = new JavaParser(
+                new ParserConfiguration().setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17));
         CompilationUnit cu;
         try (FileInputStream in = new FileInputStream(javaFile)) {
             cu = parser.parse(in).getResult().orElse(null);
@@ -235,8 +249,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 if (!validationStatements.isEmpty()) {
                     pendingRecordInjections.put(
                             record.getNameAsString(),
-                            new ArrayList<>(validationStatements)
-                    );
+                            new ArrayList<>(validationStatements));
                 }
                 count++;
                 getLog().debug("已注入校验代码到 Record: " + record.getName());
@@ -375,8 +388,11 @@ public class ValidationCodegenMojo extends AbstractMojo {
             case "NotBlank" -> createCheckCall("checkNotBlank", paramName, message);
             case "NotEmpty" -> createCheckCall("checkNotEmpty", paramName, message);
             case "Size" -> createSizeCheckCall(paramName, annotation, message);
+            case "SizeString" -> createSizeStringCheckCall(paramName, annotation, message);
             case "Min" -> createMinCheckCall(paramName, annotation, message);
+            case "MinString" -> createMinCheckCall(paramName, annotation, message);
             case "Max" -> createMaxCheckCall(paramName, annotation, message);
+            case "MaxString" -> createMaxCheckCall(paramName, annotation, message);
             case "Pattern" -> createPatternCheckCall(paramName, annotation, message);
             case "Email" -> createCheckCall("checkEmail", paramName, message);
             case "Positive" -> createCheckCall("checkPositive", paramName, message);
@@ -398,9 +414,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 new SimpleName(methodName),
                 new NodeList<>(
                         new NameExpr(paramName),
-                        new StringLiteralExpr(message)
-                )
-        );
+                        new StringLiteralExpr(message)));
         return new ExpressionStmt(call);
     }
 
@@ -422,8 +436,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
         MethodCallExpr call = new MethodCallExpr(
                 new NameExpr("ValidationHelper"),
                 new SimpleName("validate"),
-                args
-        );
+                args);
         return new ExpressionStmt(call);
     }
 
@@ -466,9 +479,24 @@ public class ValidationCodegenMojo extends AbstractMojo {
                         new NameExpr(paramName),
                         new IntegerLiteralExpr(String.valueOf(min)),
                         new IntegerLiteralExpr(String.valueOf(max)),
-                        new StringLiteralExpr(message)
-                )
-        );
+                        new StringLiteralExpr(message)));
+        return new ExpressionStmt(call);
+    }
+
+    private Statement createSizeStringCheckCall(String paramName, AnnotationExpr annotation, String message) {
+        String minRaw = extractStringAttribute(annotation, "min", "0");
+        String maxRaw = extractStringAttribute(annotation, "max", String.valueOf(Integer.MAX_VALUE));
+        Expression minExpr = createIntValueExpression(minRaw);
+        Expression maxExpr = createIntValueExpression(maxRaw);
+
+        MethodCallExpr call = new MethodCallExpr(
+                new NameExpr("ValidationHelper"),
+                new SimpleName("checkSize"),
+                new NodeList<>(
+                        new NameExpr(paramName),
+                        minExpr,
+                        maxExpr,
+                        new StringLiteralExpr(message)));
         return new ExpressionStmt(call);
     }
 
@@ -476,17 +504,36 @@ public class ValidationCodegenMojo extends AbstractMojo {
      * 创建 ValidationHelper.checkMin(param, value, message) 调用
      */
     private Statement createMinCheckCall(String paramName, AnnotationExpr annotation, String message) {
-        long value = extractLongAttribute(annotation, "value", Long.MIN_VALUE);
+        String rawValue = extractStringAttribute(annotation, "value", null);
+        if (springSupport && isSpringPlaceholder(rawValue)) {
+            String key = extractSpringPropertyKey(rawValue);
+            this.needsSpringConfigHolderImport = true;
+            MethodCallExpr parseCall = new MethodCallExpr(
+                    new NameExpr("Long"),
+                    new SimpleName("parseLong"),
+                    new NodeList<>(
+                            new MethodCallExpr(
+                                    new NameExpr("SpringConfigHolder"),
+                                    new SimpleName("getProperty"),
+                                    new NodeList<>(new StringLiteralExpr(key)))));
+            MethodCallExpr call = new MethodCallExpr(
+                    new NameExpr("ValidationHelper"),
+                    new SimpleName("checkMin"),
+                    new NodeList<>(
+                            new NameExpr(paramName),
+                            parseCall,
+                            new StringLiteralExpr(message)));
+            return new ExpressionStmt(call);
+        }
 
+        long value = parseLongValue(rawValue, extractLongAttribute(annotation, "value", Long.MIN_VALUE));
         MethodCallExpr call = new MethodCallExpr(
                 new NameExpr("ValidationHelper"),
                 new SimpleName("checkMin"),
                 new NodeList<>(
                         new NameExpr(paramName),
                         new LongLiteralExpr(String.valueOf(value) + "L"),
-                        new StringLiteralExpr(message)
-                )
-        );
+                        new StringLiteralExpr(message)));
         return new ExpressionStmt(call);
     }
 
@@ -494,17 +541,36 @@ public class ValidationCodegenMojo extends AbstractMojo {
      * 创建 ValidationHelper.checkMax(param, value, message) 调用
      */
     private Statement createMaxCheckCall(String paramName, AnnotationExpr annotation, String message) {
-        long value = extractLongAttribute(annotation, "value", Long.MAX_VALUE);
+        String rawValue = extractStringAttribute(annotation, "value", null);
+        if (springSupport && isSpringPlaceholder(rawValue)) {
+            String key = extractSpringPropertyKey(rawValue);
+            this.needsSpringConfigHolderImport = true;
+            MethodCallExpr parseCall = new MethodCallExpr(
+                    new NameExpr("Long"),
+                    new SimpleName("parseLong"),
+                    new NodeList<>(
+                            new MethodCallExpr(
+                                    new NameExpr("SpringConfigHolder"),
+                                    new SimpleName("getProperty"),
+                                    new NodeList<>(new StringLiteralExpr(key)))));
+            MethodCallExpr call = new MethodCallExpr(
+                    new NameExpr("ValidationHelper"),
+                    new SimpleName("checkMax"),
+                    new NodeList<>(
+                            new NameExpr(paramName),
+                            parseCall,
+                            new StringLiteralExpr(message)));
+            return new ExpressionStmt(call);
+        }
 
+        long value = parseLongValue(rawValue, extractLongAttribute(annotation, "value", Long.MAX_VALUE));
         MethodCallExpr call = new MethodCallExpr(
                 new NameExpr("ValidationHelper"),
                 new SimpleName("checkMax"),
                 new NodeList<>(
                         new NameExpr(paramName),
                         new LongLiteralExpr(String.valueOf(value) + "L"),
-                        new StringLiteralExpr(message)
-                )
-        );
+                        new StringLiteralExpr(message)));
         return new ExpressionStmt(call);
     }
 
@@ -513,6 +579,21 @@ public class ValidationCodegenMojo extends AbstractMojo {
      */
     private Statement createPatternCheckCall(String paramName, AnnotationExpr annotation, String message) {
         String regexp = extractStringAttribute(annotation, "regexp", "");
+        if (springSupport && isSpringPlaceholder(regexp)) {
+            String key = extractSpringPropertyKey(regexp);
+            this.needsSpringConfigHolderImport = true;
+            MethodCallExpr call = new MethodCallExpr(
+                    new NameExpr("ValidationHelper"),
+                    new SimpleName("checkPattern"),
+                    new NodeList<>(
+                            new NameExpr(paramName),
+                            new MethodCallExpr(
+                                    new NameExpr("SpringConfigHolder"),
+                                    new SimpleName("getProperty"),
+                                    new NodeList<>(new StringLiteralExpr(key))),
+                            new StringLiteralExpr(message)));
+            return new ExpressionStmt(call);
+        }
 
         MethodCallExpr call = new MethodCallExpr(
                 new NameExpr("ValidationHelper"),
@@ -520,9 +601,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 new NodeList<>(
                         new NameExpr(paramName),
                         new StringLiteralExpr(regexp),
-                        new StringLiteralExpr(message)
-                )
-        );
+                        new StringLiteralExpr(message)));
         return new ExpressionStmt(call);
     }
 
@@ -533,7 +612,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
         String message = extractStringAttribute(annotation, "message", null);
 
         if (message == null || message.isEmpty()) {
-            if ("Size".equals(annotationName)) {
+            if ("Size".equals(annotationName) || "SizeString".equals(annotationName)) {
                 message = getSizeDefaultMessage(paramName, annotation);
             } else {
                 message = getDefaultMessage(paramName, annotationName);
@@ -545,7 +624,7 @@ public class ValidationCodegenMojo extends AbstractMojo {
 
         // 去除 jakarta.validation.constraints 包前缀
         if (message.startsWith("{jakarta.validation.constraints.")) {
-            if ("Size".equals(annotationName)) {
+            if ("Size".equals(annotationName) || "SizeString".equals(annotationName)) {
                 message = getSizeDefaultMessage(paramName, annotation);
             } else {
                 message = getDefaultMessage(paramName, annotationName);
@@ -560,21 +639,30 @@ public class ValidationCodegenMojo extends AbstractMojo {
      */
     private String replacePlaceholders(String message, AnnotationExpr annotation, String annotationName) {
         switch (annotationName) {
-            case "Size": {
-                int min = extractIntAttribute(annotation, "min", 0);
-                int max = extractIntAttribute(annotation, "max", Integer.MAX_VALUE);
-                message = message.replace("{min}", String.valueOf(min));
-                message = message.replace("{max}", String.valueOf(max));
+            case "Size":
+            case "SizeString": {
+                String min = extractStringAttribute(annotation, "min", "0");
+                String max = extractStringAttribute(annotation, "max", String.valueOf(Integer.MAX_VALUE));
+                message = message.replace("{min}", min);
+                message = message.replace("{max}", max);
                 break;
             }
-            case "Min": {
-                long value = extractLongAttribute(annotation, "value", Long.MIN_VALUE);
-                message = message.replace("{value}", String.valueOf(value));
+            case "Min":
+            case "MinString": {
+                String value = extractStringAttribute(annotation, "value", null);
+                if (value == null) {
+                    value = String.valueOf(extractLongAttribute(annotation, "value", Long.MIN_VALUE));
+                }
+                message = message.replace("{value}", value);
                 break;
             }
-            case "Max": {
-                long value = extractLongAttribute(annotation, "value", Long.MAX_VALUE);
-                message = message.replace("{value}", String.valueOf(value));
+            case "Max":
+            case "MaxString": {
+                String value = extractStringAttribute(annotation, "value", null);
+                if (value == null) {
+                    value = String.valueOf(extractLongAttribute(annotation, "value", Long.MAX_VALUE));
+                }
+                message = message.replace("{value}", value);
                 break;
             }
             case "Pattern": {
@@ -596,9 +684,9 @@ public class ValidationCodegenMojo extends AbstractMojo {
             case "NotNull" -> paramName + "不能为空";
             case "NotBlank" -> paramName + "不能为空白";
             case "NotEmpty" -> paramName + "不能为空";
-            case "Size" -> paramName + "大小不合法";
-            case "Min" -> paramName + "不能小于最小值";
-            case "Max" -> paramName + "不能大于最大值";
+            case "Size", "SizeString" -> paramName + "大小不合法";
+            case "Min", "MinString" -> paramName + "不能小于最小值";
+            case "Max", "MaxString" -> paramName + "不能大于最大值";
             case "Pattern" -> paramName + "格式不正确";
             case "Email" -> paramName + "邮箱格式不正确";
             case "Positive" -> paramName + "必须为正数";
@@ -615,12 +703,90 @@ public class ValidationCodegenMojo extends AbstractMojo {
      * 获取 @Size 注解的默认消息（包含 min/max 信息）
      */
     private String getSizeDefaultMessage(String paramName, AnnotationExpr annotation) {
-        int min = extractIntAttribute(annotation, "min", 0);
-        int max = extractIntAttribute(annotation, "max", Integer.MAX_VALUE);
+        String minRaw = extractStringAttribute(annotation, "min", "0");
+        String maxRaw = extractStringAttribute(annotation, "max", String.valueOf(Integer.MAX_VALUE));
+        int min = parseIntString(minRaw, 0);
+        int max = parseIntString(maxRaw, Integer.MAX_VALUE);
         if (max == Integer.MAX_VALUE) {
             return paramName + "长度不能小于 " + min;
         }
         return paramName + "长度必须在 " + min + " 到 " + max + " 之间";
+    }
+
+    private int parseIntString(String rawValue, int defaultValue) {
+        if (rawValue == null) {
+            return defaultValue;
+        }
+        String normalized = rawValue.trim();
+        if (normalized.endsWith("L") || normalized.endsWith("l")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        try {
+            return Integer.parseInt(normalized);
+        } catch (NumberFormatException ignored) {
+            return defaultValue;
+        }
+    }
+
+    private long parseLongValue(String rawValue, long fallback) {
+        if (rawValue != null && !rawValue.isEmpty()) {
+            String normalized = rawValue.trim();
+            if (normalized.endsWith("L") || normalized.endsWith("l")) {
+                normalized = normalized.substring(0, normalized.length() - 1);
+            }
+            try {
+                return Long.parseLong(normalized);
+            } catch (NumberFormatException ignore) {
+                // 如果不是有效数字，则使用 fallback
+            }
+        }
+        return fallback;
+    }
+
+    private Expression createIntValueExpression(String rawValue) {
+        if (rawValue == null) {
+            rawValue = "0";
+        }
+        if (isSpringPlaceholder(rawValue)) {
+            String key = extractSpringPropertyKey(rawValue);
+            this.needsSpringConfigHolderImport = true;
+            return new MethodCallExpr(
+                    new NameExpr("Integer"),
+                    new SimpleName("parseInt"),
+                    new NodeList<>(
+                            new MethodCallExpr(
+                                    new NameExpr("SpringConfigHolder"),
+                                    new SimpleName("getProperty"),
+                                    new NodeList<>(new StringLiteralExpr(key)))));
+        }
+        String normalized = rawValue.trim();
+        if (normalized.endsWith("L") || normalized.endsWith("l")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return new IntegerLiteralExpr(normalized);
+    }
+
+    private Expression createLongValueExpression(String rawValue) {
+        if (rawValue == null) {
+            rawValue = "0";
+        }
+        if (isSpringPlaceholder(rawValue)) {
+            String key = extractSpringPropertyKey(rawValue);
+            this.needsSpringConfigHolderImport = true;
+            return new MethodCallExpr(
+                    new NameExpr("Long"),
+                    new SimpleName("parseLong"),
+                    new NodeList<>(
+                            new MethodCallExpr(
+                                    new NameExpr("SpringConfigHolder"),
+                                    new SimpleName("getProperty"),
+                                    new NodeList<>(new StringLiteralExpr(key)))));
+        }
+        String normalized = rawValue.trim();
+        if (normalized.endsWith("L") || normalized.endsWith("l")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return new LongLiteralExpr(normalized + "L");
     }
 
     /**
@@ -775,17 +941,106 @@ public class ValidationCodegenMojo extends AbstractMojo {
                             + sourceCode.substring(packageEnd + 1);
                 }
             }
+            if (needsSpringConfigHolderImport
+                    && !sourceCode.contains("import com.firmae.validation.SpringConfigHolder;")) {
+                int packageEnd = sourceCode.indexOf(';');
+                if (packageEnd >= 0) {
+                    sourceCode = sourceCode.substring(0, packageEnd + 1)
+                            + "\nimport com.firmae.validation.SpringConfigHolder;"
+                            + sourceCode.substring(packageEnd + 1);
+                }
+            }
 
             // 移除原始源码中的 @PreCompile 注解
             sourceCode = sourceCode.replaceAll("@PreCompile\\s*\n?", "");
         } else {
             sourceCode = cu.toString();
+            if (needsSpringConfigHolderImport
+                    && !sourceCode.contains("import com.firmae.validation.SpringConfigHolder;")) {
+                int packageEnd = sourceCode.indexOf(';');
+                if (packageEnd >= 0) {
+                    sourceCode = sourceCode.substring(0, packageEnd + 1)
+                            + "\nimport com.firmae.validation.SpringConfigHolder;"
+                            + sourceCode.substring(packageEnd + 1);
+                }
+            }
         }
 
         // 写入文件
         Files.writeString(outputPath, sourceCode);
 
         getLog().debug("输出文件: " + outputPath);
+    }
+
+    private boolean detectSpringSupport() {
+        if (project == null) {
+            return false;
+        }
+        return project.getDependencies().stream()
+                .anyMatch(dep -> (dep.getGroupId() != null && dep.getGroupId().startsWith("org.springframework"))
+                        || (dep.getArtifactId() != null && dep.getArtifactId().startsWith("spring-")));
+    }
+
+    private void generateSpringConfigHolder() {
+        try {
+            Path holderPath = outputDir.toPath().resolve("com/firmae/validation/SpringConfigHolder.java");
+            Files.createDirectories(holderPath.getParent());
+            StringBuilder sb = new StringBuilder();
+            sb.append("package com.firmae.validation;\n\n");
+            if (springSupport) {
+                sb.append("import org.springframework.context.ApplicationContext;\n");
+                sb.append("import org.springframework.context.ApplicationListener;\n");
+                sb.append("import org.springframework.context.event.ContextRefreshedEvent;\n");
+                sb.append("import org.springframework.core.env.Environment;\n");
+                sb.append("import org.springframework.stereotype.Component;\n\n");
+                sb.append("@Component\n");
+                sb.append("public class SpringConfigHolder implements ApplicationListener<ContextRefreshedEvent> {\n");
+                sb.append("    private static volatile ApplicationContext applicationContext;\n");
+                sb.append("    private static volatile Environment environment;\n\n");
+                sb.append("    @Override\n");
+                sb.append("    public void onApplicationEvent(ContextRefreshedEvent event) {\n");
+                sb.append("        applicationContext = event.getApplicationContext();\n");
+                sb.append("        environment = applicationContext.getEnvironment();\n");
+                sb.append("    }\n\n");
+                sb.append("    public static String getProperty(String key) {\n");
+                sb.append("        return environment == null ? null : environment.getProperty(key);\n");
+                sb.append("    }\n\n");
+                sb.append("    public static String getProperty(String key, String defaultValue) {\n");
+                sb.append(
+                        "        return environment == null ? defaultValue : environment.getProperty(key, defaultValue);\n");
+                sb.append("    }\n\n");
+                sb.append("    public static <T> T getProperty(String key, Class<T> targetType) {\n");
+                sb.append("        return environment == null ? null : environment.getProperty(key, targetType);\n");
+                sb.append("    }\n\n");
+                sb.append("    public static <T> T getProperty(String key, Class<T> targetType, T defaultValue) {\n");
+                sb.append(
+                        "        return environment == null ? defaultValue : environment.getProperty(key, targetType, defaultValue);\n");
+                sb.append("    }\n\n");
+                sb.append("    public static boolean isSpringSupport() {\n");
+                sb.append("        return environment != null;\n");
+                sb.append("    }\n");
+                sb.append("}\n");
+            } else {
+                sb.append("public class SpringConfigHolder {\n");
+                sb.append("    private static final boolean springSupport = false;\n\n");
+                sb.append("    public static boolean isSpringSupport() {\n");
+                sb.append("        return springSupport;\n");
+                sb.append("    }\n");
+                sb.append("}\n");
+            }
+            Files.writeString(holderPath, sb.toString(), StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            getLog().warn("无法生成 SpringConfigHolder: " + e.getMessage());
+        }
+    }
+
+    private boolean isSpringPlaceholder(String value) {
+        return value != null && SPRING_PLACEHOLDER_PATTERN.matcher(value).matches();
+    }
+
+    private String extractSpringPropertyKey(String placeholder) {
+        var matcher = SPRING_PLACEHOLDER_PATTERN.matcher(placeholder);
+        return matcher.matches() ? matcher.group(1) : placeholder;
     }
 
     /**
@@ -802,19 +1057,23 @@ public class ValidationCodegenMojo extends AbstractMojo {
             String searchPattern = "record " + recordName + "(";
 
             int recordStart = sourceCode.indexOf(searchPattern);
-            if (recordStart < 0) continue;
+            if (recordStart < 0)
+                continue;
 
             // 找到 record 参数列表的右括号（跳过注解中的括号）
             int parenEnd = findMatchingParen(sourceCode, recordStart + searchPattern.length() - 1);
-            if (parenEnd < 0) continue;
+            if (parenEnd < 0)
+                continue;
 
             // 找到 record body 开始的 '{'
             int braceStart = sourceCode.indexOf('{', parenEnd);
-            if (braceStart < 0) continue;
+            if (braceStart < 0)
+                continue;
 
             // 找到匹配的结束 '}'
             int braceEnd = findMatchingBrace(sourceCode, braceStart);
-            if (braceEnd < 0) continue;
+            if (braceEnd < 0)
+                continue;
 
             String body = sourceCode.substring(braceStart + 1, braceEnd).trim();
 
@@ -831,10 +1090,12 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 // 已有 compact constructor，在第一个语句前插入校验代码
                 // 找到 compact constructor body 的 '{'
                 int ctorBraceStart = sourceCode.indexOf('{', braceStart + 1);
-                if (ctorBraceStart < 0 || ctorBraceStart >= braceEnd) continue;
+                if (ctorBraceStart < 0 || ctorBraceStart >= braceEnd)
+                    continue;
 
                 int ctorBraceEnd = findMatchingBrace(sourceCode, ctorBraceStart);
-                if (ctorBraceEnd < 0) continue;
+                if (ctorBraceEnd < 0)
+                    continue;
 
                 StringBuilder insert = new StringBuilder();
                 for (Statement stmt : statements) {
@@ -842,7 +1103,8 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 }
 
                 // 在 compact constructor body 的 '{' 后插入
-                sourceCode = sourceCode.substring(0, ctorBraceStart + 1) + "\n" + insert + sourceCode.substring(ctorBraceStart + 1);
+                sourceCode = sourceCode.substring(0, ctorBraceStart + 1) + "\n" + insert
+                        + sourceCode.substring(ctorBraceStart + 1);
             }
         }
         return sourceCode;
@@ -862,7 +1124,8 @@ public class ValidationCodegenMojo extends AbstractMojo {
             char c = source.charAt(i);
 
             if (inLineComment) {
-                if (c == '\n') inLineComment = false;
+                if (c == '\n')
+                    inLineComment = false;
                 continue;
             }
             if (inBlockComment) {
@@ -873,28 +1136,52 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 continue;
             }
             if (inString) {
-                if (c == '\\' && i + 1 < source.length()) { i++; continue; }
-                if (c == '"') inString = false;
+                if (c == '\\' && i + 1 < source.length()) {
+                    i++;
+                    continue;
+                }
+                if (c == '"')
+                    inString = false;
                 continue;
             }
             if (inChar) {
-                if (c == '\\' && i + 1 < source.length()) { i++; continue; }
-                if (c == '\'') inChar = false;
+                if (c == '\\' && i + 1 < source.length()) {
+                    i++;
+                    continue;
+                }
+                if (c == '\'')
+                    inChar = false;
                 continue;
             }
 
             if (c == '/' && i + 1 < source.length()) {
                 char next = source.charAt(i + 1);
-                if (next == '/') { inLineComment = true; i++; continue; }
-                if (next == '*') { inBlockComment = true; i++; continue; }
+                if (next == '/') {
+                    inLineComment = true;
+                    i++;
+                    continue;
+                }
+                if (next == '*') {
+                    inBlockComment = true;
+                    i++;
+                    continue;
+                }
             }
-            if (c == '"') { inString = true; continue; }
-            if (c == '\'') { inChar = true; continue; }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                continue;
+            }
 
-            if (c == '(') depth++;
+            if (c == '(')
+                depth++;
             if (c == ')') {
                 depth--;
-                if (depth == 0) return i;
+                if (depth == 0)
+                    return i;
             }
         }
         return -1;
@@ -914,7 +1201,8 @@ public class ValidationCodegenMojo extends AbstractMojo {
             char c = source.charAt(i);
 
             if (inLineComment) {
-                if (c == '\n') inLineComment = false;
+                if (c == '\n')
+                    inLineComment = false;
                 continue;
             }
             if (inBlockComment) {
@@ -925,28 +1213,52 @@ public class ValidationCodegenMojo extends AbstractMojo {
                 continue;
             }
             if (inString) {
-                if (c == '\\' && i + 1 < source.length()) { i++; continue; }
-                if (c == '"') inString = false;
+                if (c == '\\' && i + 1 < source.length()) {
+                    i++;
+                    continue;
+                }
+                if (c == '"')
+                    inString = false;
                 continue;
             }
             if (inChar) {
-                if (c == '\\' && i + 1 < source.length()) { i++; continue; }
-                if (c == '\'') inChar = false;
+                if (c == '\\' && i + 1 < source.length()) {
+                    i++;
+                    continue;
+                }
+                if (c == '\'')
+                    inChar = false;
                 continue;
             }
 
             if (c == '/' && i + 1 < source.length()) {
                 char next = source.charAt(i + 1);
-                if (next == '/') { inLineComment = true; i++; continue; }
-                if (next == '*') { inBlockComment = true; i++; continue; }
+                if (next == '/') {
+                    inLineComment = true;
+                    i++;
+                    continue;
+                }
+                if (next == '*') {
+                    inBlockComment = true;
+                    i++;
+                    continue;
+                }
             }
-            if (c == '"') { inString = true; continue; }
-            if (c == '\'') { inChar = true; continue; }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '\'') {
+                inChar = true;
+                continue;
+            }
 
-            if (c == '{') depth++;
+            if (c == '{')
+                depth++;
             if (c == '}') {
                 depth--;
-                if (depth == 0) return i;
+                if (depth == 0)
+                    return i;
             }
         }
         return -1;

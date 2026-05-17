@@ -398,6 +398,29 @@ public void saveUser(
 | `@NotEmpty` | `{参数名}不能为空` |
 | `@Size` | `{参数名}长度必须在 {min} 到 {max} 之间` |
 | `@Min` | `{参数名}不能小于最小值` |
+
+### Spring 占位符与 String-valued 注解
+
+如果你希望在注解中使用 Spring 配置占位符（例如 `${app.limit}`），请使用项目提供的字符串型注解：
+
+- `@MinString("${app.min}")`
+- `@MaxString("${app.max}")`
+- `@SizeString(min = "${app.size.min}", max = "${app.size.max}")`
+
+插件在扫描源代码时会尝试检测 Spring 相关类路径并自动启用 Spring 支持（注入日志会显示 `Spring support enabled`）。生成的代码在运行时会通过 `SpringConfigHolder.getProperty("app.min")` 获取配置值并将其转换为数值后再执行校验。
+
+示例：
+
+```java
+@PreCompile
+public void setLimits(
+        @MinString("${app.limit.min}") String min,
+        @MaxString("${app.limit.max}") String max) {
+    // 运行时会解析占位符并进行数值校验
+}
+```
+
+如果项目并未包含 Spring，插件仍会接受 `*String` 注解，但运行时会尝试直接解析字面值为数字并在无法解析时抛出明确异常。
 | `@Max` | `{参数名}不能大于最大值` |
 | `@Pattern` | `{参数名}格式不正确` |
 | `@Email` | `{参数名}邮箱格式不正确` |

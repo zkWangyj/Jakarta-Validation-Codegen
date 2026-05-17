@@ -3,13 +3,15 @@
 基于 Maven 插件 + JavaParser 的编译时校验代码注入工具，在 `generate-sources` 阶段自动将 `ValidationHelper.checkXxx()` 调用注入到方法体中。
 
 ## 解决问题
-在编码时，很多时候需要校验参数合法性，类似某个字符串不能为空之类的，手动写代码或调用Hibernate Validator太麻烦。 
+
+在编码时，很多时候需要校验参数合法性，类似某个字符串不能为空之类的，手动写代码或调用Hibernate Validator太麻烦。
 现在，你只需要使用Jakarta-Validation 注解写好校验规则，工具自动帮你生成静态校验代码
 
 ## 不同分支区别
+
 - simple 所有约束全部代码中写死
-- spring-support(实现中)  配置都支持spring配置，可以根据配置读取配置
-   `@Min("${min}")`, 会读取spring 配置的min值进行校验
+- spring-support(实现中) 配置都支持spring配置，可以根据配置读取配置
+  `@Min("${min}")`, 会读取spring 配置的min值进行校验
 
 ## 核心特性
 
@@ -145,30 +147,53 @@ compile 阶段                              ↓
 
 ### 参数校验注解
 
-| 类别 | 注解 | ValidationHelper 方法 |
-|------|------|----------------------|
-| 空值检查 | `@NotNull` | `checkNotNull(Object, String)` |
-| 空值检查 | `@NotBlank` | `checkNotBlank(String, String)` |
-| 空值检查 | `@NotEmpty` | `checkNotEmpty(Object, String)` |
-| 范围检查 | `@Size` | `checkSize(Object, int, int, String)` |
-| 范围检查 | `@Min` | `checkMin(long, long, String)` |
-| 范围检查 | `@Max` | `checkMax(long, long, String)` |
-| 模式检查 | `@Pattern` | `checkPattern(String, String, String)` |
-| 模式检查 | `@Email` | `checkEmail(String, String)` |
-| 数值符号 | `@Positive` | `checkPositive(double, String)` |
-| 数值符号 | `@PositiveOrZero` | `checkPositiveOrZero(double, String)` |
-| 数值符号 | `@Negative` | `checkNegative(double, String)` |
-| 数值符号 | `@NegativeOrZero` | `checkNegativeOrZero(double, String)` |
-| 布尔检查 | `@AssertTrue` | `checkAssertTrue(boolean, String)` |
-| 布尔检查 | `@AssertFalse` | `checkAssertFalse(boolean, String)` |
+| 类别     | 注解              | ValidationHelper 方法                  |
+| -------- | ----------------- | -------------------------------------- |
+| 空值检查 | `@NotNull`        | `checkNotNull(Object, String)`         |
+| 空值检查 | `@NotBlank`       | `checkNotBlank(String, String)`        |
+| 空值检查 | `@NotEmpty`       | `checkNotEmpty(Object, String)`        |
+| 范围检查 | `@Size`           | `checkSize(Object, int, int, String)`  |
+| 范围检查 | `@Min`            | `checkMin(long, long, String)`         |
+| 范围检查 | `@Max`            | `checkMax(long, long, String)`         |
+| 模式检查 | `@Pattern`        | `checkPattern(String, String, String)` |
+| 模式检查 | `@Email`          | `checkEmail(String, String)`           |
+| 数值符号 | `@Positive`       | `checkPositive(double, String)`        |
+| 数值符号 | `@PositiveOrZero` | `checkPositiveOrZero(double, String)`  |
+| 数值符号 | `@Negative`       | `checkNegative(double, String)`        |
+| 数值符号 | `@NegativeOrZero` | `checkNegativeOrZero(double, String)`  |
+| 布尔检查 | `@AssertTrue`     | `checkAssertTrue(boolean, String)`     |
+| 布尔检查 | `@AssertFalse`    | `checkAssertFalse(boolean, String)`    |
 
 ### 嵌套校验注解
 
-| 注解 | 说明 | ValidationHelper 方法 |
-|------|------|----------------------|
+| 注解         | 说明                                        | ValidationHelper 方法      |
+| ------------ | ------------------------------------------- | -------------------------- |
 | `@Validated` | 使用 Hibernate Validator 校验自定义对象字段 | `validate(Object, String)` |
 
 支持占位符：`{min}`, `{max}`, `{value}`, `{regexp}`
+
+## String-valued 注解与 Spring 占位符支持
+
+为了解决 `@Min`/`@Max`/`@Size` 等注解在注解参数使用 Spring 引用占位符（例如 `${...}`）时的限制，本项目新增了三个可选的字符串型注解：
+
+- `@MinString("${my.min}")`
+- `@MaxString("${my.max}")`
+- `@SizeString(min = "${my.size.min}", max = "${my.size.max}")`
+
+这些注解在编译期仍会被插件识别；当参数为字符串形式（含 `${...}`）时，生成的校验代码会在运行时通过 `SpringConfigHolder.getProperty(...)`（若启用 Spring 支持）或者通过内置回退解析来获取实际数值后再执行 `ValidationHelper` 的数值范围校验。
+
+示例：
+
+```java
+@PreCompile
+public void setLimit(@MinString("${app.limit.min}") String limit) {
+    // 编译期注入的代码会在运行时解析 ${app.limit.min} 并调用 ValidationHelper.checkMin(...)
+}
+```
+
+启用方式：插件会在扫描时尝试检测 Spring 相关依赖（classpath 存在 `org.springframework` 包时自动启用）。在注入日志中会显示 `Spring support enabled`。如果未启用 Spring，生成的代码会回退到默认行为（直接尝试将字面值解析为数字或抛出明确错误）。
+
+测试：项目包含针对 Spring 占位符解析的单元测试，位于 `validation-codegen-test` 模块，测试类为 `com.firmae.test.ValidationTest`，运行 `mvn -pl validation-codegen-test -am test -Dtest=ValidationTest` 可以执行相关用例。
 
 ## 项目结构
 
@@ -203,6 +228,7 @@ mvn test
 ```
 
 ## 感谢
+
 本项目只是突然有一个想法，主要代码使用 TRAE SOLO CN 完成，感谢字节
 
 如果有人有用，我会很感激。

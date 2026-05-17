@@ -1,3 +1,4 @@
 com\firmae\test\UserService.class
-com\firmae\test\UserDTO.class
 com\firmae\test\UserRecord.class
+com\firmae\test\UserDTO.class
+com\firmae\validation\SpringConfigHolder.class

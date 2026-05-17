@@ -134,6 +134,7 @@ compile 阶段                              ↓
 2. **注入校验**: 找到 `@PreCompile` 标记的方法/构造器/Record，在方法体开头注入 `ValidationHelper.checkXxx()` 调用
 3. **输出**: 所有源码（包括未修改的）输出到 `generated-sources/validation-injected`
 4. **编译**: Maven 只编译 `generated-sources/validation-injected` 目录
+5. **清理**: Maven编译完成后，清理生成的源码，防止代码中有相同限定名的类导致ide飘红
 
 ## 支持的注解
 

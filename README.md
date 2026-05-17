@@ -192,6 +192,13 @@ mvn clean install -DskipTests
 mvn test
 ```
 
+## 感谢
+本项目只是突然有一个想法，主要代码使用 TRAE SOLO CN 完成，感谢字节
+
+如果有人有用，我会很感激。
+
+如果有人有用，我会很感激。
+
 ## 许可证
 
 MIT License
